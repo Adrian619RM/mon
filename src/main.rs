@@ -1,7 +1,7 @@
 use std::env;
 use std::panic;
-
-use serde_json::Value;
+use serde::{Deserialize};
+use serde_json::{Value};
 use colored::*;
 use titlecase::titlecase;
 use rand::Rng;
@@ -65,13 +65,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let request_text = get_pokemon_info(&identifier.to_lowercase()).await?;
 
+    let request_species = get_pokemon_species(&identifier.to_lowercase()).await?;
+
     // one match should handle both requests as they use the same name
     match parse_pokemon_info(&request_text).await {
         Ok(p) => {
-            let pokemon = p;   
+            let pokemon = p;
+            let dex_entry = parse_pokemon_species(&request_species).await?;
             let colorscript = get_pokemon_colorscript(&pokemon.name, shiny).await?;
 
-            print_pokemon(&pokemon, &colorscript, shiny).await;
+            print_pokemon(&pokemon, &dex_entry, &colorscript, shiny).await;
         },
         Err(_) => {
             eprintln!("Error parsing Pokémon data, is your name/ID correct?");
@@ -93,7 +96,7 @@ struct Pokemon {
 async fn get_pokemon_info(identifier: &String) -> reqwest::Result<String> {
     let res = reqwest::get(format!("https://pokeapi.co/api/v2/pokemon/{}", identifier)).await?;
     let text = res.text().await?;
-
+    
     Ok(text)
 }
 
@@ -140,6 +143,54 @@ async fn parse_pokemon_info(info: &String) -> serde_json::Result<Pokemon> {
     Ok(pokemon)
 }
 
+//used for dex entry
+async fn get_pokemon_species(identifier: &String) -> reqwest::Result<String> {
+    let res = reqwest::get(format!("https://pokeapi.co/api/v2/pokemon-species/{}/", identifier)).await?;
+    let text = res.text().await?;
+
+    Ok(text)
+}
+
+#[derive(Deserialize, Debug)]
+struct FlavorTextEntry {
+    flavor_text: String,
+    language: Language,
+    version: Value,
+}
+
+#[derive(Deserialize, Debug)]
+struct Language {
+    name: String,
+    url: String,    
+}
+
+async fn parse_pokemon_species(info: &String) -> serde_json::Result<String> {
+    //das json object ist leider ein dummer hurensohn deshalb brauchen wir die derivatives, den 'use' und den ganzen shit unten
+    //TODO: find proper way to get a single english dex-entry
+
+    let val: Value = serde_json::from_str(&info)?;
+    //get deserializable object array from info
+    let flavor_text_entries: Vec<FlavorTextEntry> = serde_json::from_str(&val["flavor_text_entries"].to_string())?;
+    
+    //collection over english dex entries
+    let mut eng = Vec::<&String>::new();
+
+    for item in &flavor_text_entries {
+        // println!("{}\t{:?}", item.flavor_text, item.language);
+        let v: &Language = &item.language;
+        if v.name.eq("en") {
+            eng.push(&item.flavor_text);
+        }
+    }
+    // println!("{:?}\n", eng);
+
+    let ret = eng[0].to_string().replace("\"", "").replace("\\f", " ").replace("\\n", " ").replace("\\u{c}", "");
+    // println!("{:?}\n", ret);
+
+    Ok(ret)
+}
+
+
 async fn get_pokemon_colorscript(name: &String, shiny: bool) -> reqwest::Result<Vec<String>> {
     let name_fixed = match name.as_str() {
         "gourgeist-average" => name.replace("-average", ""),
@@ -156,7 +207,6 @@ async fn get_pokemon_colorscript(name: &String, shiny: bool) -> reqwest::Result<
     else {
         format!("https://gitlab.com/phoneybadger/pokemon-colorscripts/-/raw/main/colorscripts/small/regular/{}", name_fixed)
     };
-
 
     let res = reqwest::get(url).await?;
     let text = res.text().await?;
@@ -195,22 +245,40 @@ async fn get_type_color(type_name: &String) -> Vec<u8> {
     }
 }
 
-async fn print_pokemon(pokemon: &Pokemon, colorscript: &Vec<String>, shiny: bool) {
+async fn print_pokemon(pokemon: &Pokemon, dex_entry: &String, colorscript: &Vec<String>, shiny: bool) {
     // start printing the info 1/3 of the way through the rendering of the colorscript
-    let is = colorscript.len() / 3;
-    let indices = [is, is + 1, is + 3, is + 4]; // is + 6 eventually for the synopsis
+    // let is = colorscript.len() / 3;
+    let is = 1;
+    // println!("{}", dex_entry);
+    let mut indices = vec![
+        is, //name
+        is + 1, //type
+        is + 3, //height
+        is + 4, //weight
+        is + 6, //synopsis
+        is + 7, //synopsis 
+        is + 8, //synopsis
+        is + 9, //synopsis
+        is + 10, //synopsis
+        //is + 6 and following //synopsis
+    ];
+
+    let mut lines = dex_entry.lines();
 
     let info = [
         format!(
             "{} #{}", 
-            if shiny {titlecase(&pokemon.name.replace("-", " ")).bold().white()} else {titlecase(&pokemon.name.replace("-", " ")).bold().black()},
+            if shiny {
+                titlecase(&pokemon.name.replace("-", " ")).bold().white()
+            } else {
+                titlecase(&pokemon.name.replace("-", " ")).bold().black()
+            },
             pokemon.id.to_string().italic().white()
         ),
 
         // format the types
         // color the types according to the type's color
-        format!(
-            "{}", {
+        format!("{}", {
                 let mut x = String::new();
                 for (i, t) in pokemon.types.iter().enumerate() {
                     let color = get_type_color(t).await;
@@ -237,18 +305,50 @@ async fn print_pokemon(pokemon: &Pokemon, colorscript: &Vec<String>, shiny: bool
                 s += &format!("{}kg", &pokemon.weight / 10.0);
                 s.white()
             }
-        )
+        ),
+        
+        format!("{}",
+            lines.next().unwrap().italic().white()
+        ),
 
-        // TODO eventually add synopsis
+        format!("{}", 
+            lines.next().unwrap().italic().white()
+        ),
+
+        format!("{}", 
+            lines.next().unwrap().italic().white()
+        ),
+
+        format!("{}", 
+            lines.next().unwrap().italic().white()
+        ),
+
+        format!("{}", 
+            lines.next().unwrap().italic().white()
+        )
     ];
 
     let mut info_counter = 0;
-    for i in 0..colorscript.len() {
-        if indices.contains(&i) {
-            println!("{}\t{}", colorscript[i], info[info_counter]);
-            info_counter += 1;
-        } else {
-            println!("{}", colorscript[i]);
+    if colorscript.len() > indices.len() {
+        for i in 0..colorscript.len() {
+            if indices.contains(&i) {
+                println!("{}\t{}", colorscript[i], info[info_counter]);
+                info_counter += 1;
+            } else {
+                println!("{}", colorscript[i]);
+            }
+        }
+    } 
+    else {
+        for i in 0..indices.len() {
+            if i <= colorscript.len() {
+                println!("{}\t{}", colorscript[i], info[info_counter]);
+                info_counter += 1;
+            } else {
+                println!("{}", indices[i]);
+            }
         }
     }
+    
 }
+
