@@ -349,6 +349,5 @@ async fn print_pokemon(pokemon: &Pokemon, dex_entry: &String, colorscript: &Vec<
             }
         }
     }
-    
 }
 
